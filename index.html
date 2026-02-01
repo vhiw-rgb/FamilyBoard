@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>我家公佈欄</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+    
+    <!-- 引入 Firebase SDK (Compat 版本，適合無模組環境) -->
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+
+    <style>
+        body {
+            font-family: 'Noto Sans TC', sans-serif;
+            background-color: #FFF8F0;
+            -webkit-tap-highlight-color: transparent;
+        }
+        /* 隱藏捲軸但保留功能 */
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+        
+        .active-scale:active { transform: scale(0.95); }
+        .custom-checkbox:checked {
+            background-color: #F97316;
+            border-color: #F97316;
+        }
+        .custom-checkbox:checked + div {
+            text-decoration: line-through;
+            color: #9CA3AF;
+        }
+        /* Modal 動畫 */
+        .modal-enter { opacity: 0; transform: scale(0.95); pointer-events: none; }
+        .modal-active { opacity: 1; transform: scale(1); pointer-events: auto; }
+        .backdrop-enter { opacity: 0; pointer-events: none; }
+        .backdrop-active { opacity: 1; pointer-events: auto; }
+    </style>
+</head>
+<body class="bg-[#FFF8F0] text-gray-700 select-none">
+
+    <!-- 1. Header (固定頂部) -->
+    <header class="fixed top-0 left-0 right-0 bg-orange-100/95 backdrop-blur-md border-b border-orange-200 pt-safe-top z-50 shadow-sm transition-all duration-300" style="padding-top: env(safe-area-inset-top);">
+        <div class="h-14 flex items-center justify-between px-4">
+            <h1 class="text-xl font-bold text-orange-900 tracking-wide flex items-center gap-2">
+                🏠 我家公佈欄
+            </h1>
+            <button onclick="showCleanupModal()" class="text-xs text-orange-600 bg-orange-200/50 border border-orange-200 rounded-full px-3 py-1.5 active-scale font-medium hover:bg-orange-200">
+                🧹 清理已完成
+            </button>
+        </div>
+
+        <!-- Tabs -->
+        <div class="flex px-2 pb-2 gap-2">
+            <button onclick="switchTab('shopping')" id="tab-shopping" class="relative flex-1 py-2 rounded-xl text-sm font-bold transition-all active-scale shadow-sm flex flex-col items-center justify-center gap-1 bg-white text-gray-500">
+                <span class="text-lg">🛒</span> 採購
+                <span id="badge-shopping" class="hidden absolute top-1 right-2 bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[1.2rem] text-center shadow-sm z-10 border border-white">0</span>
+            </button>
+            <button onclick="switchTab('bills')" id="tab-bills" class="relative flex-1 py-2 rounded-xl text-sm font-bold transition-all active-scale shadow-sm flex flex-col items-center justify-center gap-1 bg-white text-gray-500">
+                <span class="text-lg">💰</span> 繳費
+                <span id="badge-bills" class="hidden absolute top-1 right-2 bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[1.2rem] text-center shadow-sm z-10 border border-white">0</span>
+            </button>
+            <button onclick="switchTab('others')" id="tab-others" class="relative flex-1 py-2 rounded-xl text-sm font-bold transition-all active-scale shadow-sm flex flex-col items-center justify-center gap-1 bg-white text-gray-500">
+                <span class="text-lg">📌</span> 雜項
+                <span id="badge-others" class="hidden absolute top-1 right-2 bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[1.2rem] text-center shadow-sm z-10 border border-white">0</span>
+            </button>
+        </div>
+    </header>
+
+    <!-- 2. 列表區 (中間捲動) -->
+    <main id="taskList" class="w-full px-4 pt-[140px] pb-40 space-y-3 min-h-screen box-border">
+        
+        <!-- 空狀態提示 -->
+        <div id="emptyState" class="hidden flex flex-col items-center justify-center pt-20 text-orange-300/70">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-16 w-16 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+            </svg>
+            <p>好清爽！沒有待辦事項 🎉</p>
+        </div>
+        
+        <!-- 未設定金鑰提示 -->
+        <div id="configWarning" class="hidden flex flex-col items-center justify-center pt-10 text-red-500 text-center px-4">
+            <p class="font-bold mb-2">⚠️ 尚未設定資料庫</p>
+            <p class="text-sm">請編輯 HTML 檔案，填入您的 Firebase Config 金鑰。</p>
+        </div>
+
+        <!-- 任務列表會插入這裡 -->
+    </main>
+
+    <!-- 3. 輸入區 (固定底部) -->
+    <footer class="fixed bottom-0 left-0 right-0 bg-white border-t border-orange-100 p-3 pb-safe-bottom z-50 shadow-[0_-4px_15px_-3px_rgba(0,0,0,0.05)]" style="padding-bottom: env(safe-area-inset-bottom);">
+        <form id="postForm" class="flex flex-col gap-2 max-w-2xl mx-auto mb-2" onsubmit="handlePost(event)">
+            <div class="flex items-end gap-2">
+                
+                <div class="relative shrink-0">
+                    <select id="userSelect" class="appearance-none bg-orange-50 border border-orange-200 rounded-xl h-12 w-12 text-center text-2xl focus:outline-none focus:ring-2 focus:ring-orange-300 cursor-pointer shadow-sm">
+                        <option value="Dad">👨🏻</option>
+                        <option value="Mom">👩🏻</option>
+                        <option value="Kid">🧒🏻</option>
+                    </select>
+                </div>
+
+                <div class="flex-1 bg-gray-50 border border-gray-200 rounded-2xl flex flex-col focus-within:ring-2 focus-within:ring-orange-300 focus-within:bg-white focus-within:border-orange-300 transition-all shadow-inner">
+                    <textarea 
+                        id="messageInput" rows="1" placeholder="新增待辦事項..." 
+                        class="w-full bg-transparent text-gray-800 p-3 pb-1 focus:outline-none resize-none text-base"
+                        style="min-height: 40px; max-height: 100px;" oninput="autoResize(this)"></textarea>
+                    <div class="flex justify-between items-center px-2 pb-2">
+                        <select id="categorySelect" class="bg-transparent text-xs font-bold text-gray-500 py-1 px-2 rounded hover:bg-gray-100 cursor-pointer focus:outline-none">
+                            <option value="shopping">🛒 放入「採購」</option>
+                            <option value="bills">💰 放入「繳費」</option>
+                            <option value="others">📌 放入「雜項」</option>
+                        </select>
+                        <span class="text-[10px] text-gray-400 px-2">按發送新增</span>
+                    </div>
+                </div>
+                <button type="submit" class="shrink-0 bg-orange-500 hover:bg-orange-600 active:bg-orange-700 text-white rounded-xl h-12 w-12 shadow-md active-scale transition-colors flex items-center justify-center">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                    </svg>
+                </button>
+            </div>
+        </form>
+    </footer>
+
+    <!-- 4. Modal -->
+    <div id="modalBackdrop" class="fixed inset-0 bg-black/40 z-[60] backdrop-blur-sm backdrop-enter transition-opacity duration-200 flex items-center justify-center p-4 hidden">
+        <div id="modalContent" class="bg-white w-full max-w-xs rounded-2xl shadow-2xl p-6 modal-enter transition-all duration-200 flex flex-col items-center text-center">
+            <div id="modalIcon" class="bg-orange-100 p-3 rounded-full text-orange-500 mb-4">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+            </div>
+            <h3 id="modalTitle" class="text-lg font-bold text-gray-900 mb-2">確認刪除</h3>
+            <p id="modalDesc" class="text-gray-500 text-sm mb-6 leading-relaxed">確定要執行這個動作嗎？</p>
+            <div class="flex gap-3 w-full">
+                <button onclick="hideModal()" class="flex-1 py-3 bg-gray-100 text-gray-600 rounded-xl font-bold text-sm hover:bg-gray-200 active:scale-95 transition-transform">
+                    取消
+                </button>
+                <button id="modalConfirmBtn" class="flex-1 py-3 bg-orange-500 text-white rounded-xl font-bold text-sm shadow-md hover:bg-orange-600 active:scale-95 transition-transform">
+                    確定
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 5. Toast -->
+    <div id="toast" class="fixed top-24 left-1/2 transform -translate-x-1/2 bg-gray-800/90 text-white px-4 py-2 rounded-full text-sm shadow-lg z-[70] transition-all duration-300 opacity-0 pointer-events-none translate-y-[-10px]">
+        提示訊息
+    </div>
+
+    <script>
+        // ==========================================
+        // CONFIGURATION
+        // ==========================================
+        // 請在這裡填入您的 Firebase 設定
+        // 1. 到 console.firebase.google.com 建立專案
+        // 2. 選擇「網頁 (Web)」應用程式 </>
+        // 3. 複製 firebaseConfig 內容貼到下方
+        const firebaseConfig = {
+            apiKey: "",
+            authDomain: "",
+            projectId: "",
+            storageBucket: "",
+            messagingSenderId: "",
+            appId: ""
+        };
+
+        // ==========================================
+        // Data Service (Firebase Edition)
+        // ==========================================
+        let db;
+        let localTasks = []; // 用來暫存資料以供渲染
+        let unsubscribe = null; // 用來停止監聽
+        const AUTO_CLEANUP_HOURS = 24;
+
+        // 初始化 Firebase
+        function initFirebase() {
+            if (!firebaseConfig.apiKey) {
+                document.getElementById('configWarning').classList.remove('hidden');
+                document.getElementById('emptyState').classList.add('hidden');
+                return false;
+            }
+            firebase.initializeApp(firebaseConfig);
+            db = firebase.firestore();
+            return true;
+        }
+
+        const DataService = {
+            // 啟動即時監聽
+            initListener() {
+                if (!initFirebase()) return;
+
+                // 監聽 tasks 集合，依照 timestamp 排序
+                unsubscribe = db.collection("tasks").orderBy("timestamp", "desc")
+                    .onSnapshot((snapshot) => {
+                        localTasks = [];
+                        snapshot.forEach((doc) => {
+                            localTasks.push({ ...doc.data(), firestoreId: doc.id });
+                        });
+                        
+                        // 資料更新時，自動執行過期檢查與渲染
+                        this.checkAutoCleanup();
+                        renderTasks(); 
+                    }, (error) => {
+                        console.error("Error getting documents: ", error);
+                        showToast("連線發生錯誤");
+                    });
+            },
+
+            // 新增任務 (寫入 Firebase)
+            async addTask(newTask) {
+                if (!db) return;
+                try {
+                    // 不需要手動呼叫 render，監聽器會處理
+                    await db.collection("tasks").add(newTask);
+                } catch (e) {
+                    console.error("Error adding document: ", e);
+                    showToast("新增失敗");
+                }
+            },
+
+            // 切換完成狀態
+            async toggleComplete(firestoreId) {
+                if (!db) return;
+                const task = localTasks.find(t => t.firestoreId === firestoreId);
+                if (task) {
+                    const newStatus = !task.completed;
+                    const newCompletedAt = newStatus ? Date.now() : null;
+                    
+                    try {
+                        await db.collection("tasks").doc(firestoreId).update({
+                            completed: newStatus,
+                            completedAt: newCompletedAt
+                        });
+                    } catch (e) {
+                        console.error("Error updating document: ", e);
+                    }
+                }
+            },
+
+            // 刪除單一任務
+            async deleteTask(firestoreId) {
+                if (!db) return;
+                try {
+                    await db.collection("tasks").doc(firestoreId).delete();
+                } catch (e) {
+                    console.error("Error removing document: ", e);
+                }
+            },
+
+            // 批次刪除已完成任務
+            async deleteCompletedTasks() {
+                if (!db) return;
+                const batch = db.batch();
+                let deleteCount = 0;
+
+                localTasks.forEach(task => {
+                    if (task.completed) {
+                        const ref = db.collection("tasks").doc(task.firestoreId);
+                        batch.delete(ref);
+                        deleteCount++;
+                    }
+                });
+
+                if (deleteCount > 0) {
+                    await batch.commit();
+                }
+            },
+
+            // 自動清理過期任務
+            async checkAutoCleanup() {
+                if (!db) return;
+                const now = Date.now();
+                const expiredTasks = localTasks.filter(task => {
+                    if (!task.completed || !task.completedAt) return false;
+                    const hoursSinceCompletion = (now - task.completedAt) / (1000 * 60 * 60);
+                    return hoursSinceCompletion >= AUTO_CLEANUP_HOURS;
+                });
+
+                if (expiredTasks.length > 0) {
+                    const batch = db.batch();
+                    expiredTasks.forEach(task => {
+                        const ref = db.collection("tasks").doc(task.firestoreId);
+                        batch.delete(ref);
+                    });
+                    console.log(`Auto-cleaning ${expiredTasks.length} tasks`);
+                    await batch.commit();
+                }
+            }
+        };
+
+        // ==========================================
+        // UI Logic
+        // ==========================================
+        let currentTab = 'shopping';
+
+        document.addEventListener('DOMContentLoaded', () => {
+            switchTab('shopping');
+            autoResize(document.getElementById('messageInput'));
+            hideModal();
+            // 啟動 Firebase 監聽
+            DataService.initListener();
+        });
+
+        function switchTab(tabName) {
+            currentTab = tabName;
+            ['shopping', 'bills', 'others'].forEach(t => {
+                const btn = document.getElementById(`tab-${t}`);
+                if (t === tabName) {
+                    btn.classList.remove('bg-white', 'text-gray-500');
+                    btn.classList.add('bg-orange-500', 'text-white', 'shadow-md');
+                } else {
+                    btn.classList.add('bg-white', 'text-gray-500');
+                    btn.classList.remove('bg-orange-500', 'text-white', 'shadow-md');
+                }
+            });
+            document.getElementById('categorySelect').value = tabName;
+            renderTasks();
+        }
+
+        async function handlePost(e) {
+            e.preventDefault();
+            const input = document.getElementById('messageInput');
+            const text = input.value.trim();
+            if (!text) return;
+
+            const roleKey = document.getElementById('userSelect').value;
+            const targetCategory = document.getElementById('categorySelect').value;
+            const avatarChar = document.getElementById('userSelect').options[document.getElementById('userSelect').selectedIndex].text;
+
+            // 這裡不再需要手動產生 ID，Firebase 會處理 Doc ID，但我們保留 timestamp 做排序用
+            await DataService.addTask({
+                text: text,
+                role: roleKey,
+                avatar: avatarChar,
+                category: targetCategory,
+                completed: false,
+                completedAt: null,
+                timestamp: Date.now()
+            });
+
+            input.value = '';
+            input.style.height = '40px'; 
+            
+            if (targetCategory === currentTab) {
+                // 不需要呼叫 renderTasks，onSnapshot 會處理
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+            } else {
+                switchTab(targetCategory);
+                showToast(`已加入「${getCategoryName(targetCategory)}」`);
+            }
+        }
+
+        // 修改：傳入的是 firestoreId 字串
+        function toggleTask(firestoreId) {
+            // 將 ID 轉為字串 (如果原本是數字) 確保相容性
+            DataService.toggleComplete(String(firestoreId));
+            // 這裡不需要 render，DataService 更新會觸發 Snapshot
+        }
+
+        // Modal & Rendering Logic
+        // 修改：傳入的是 firestoreId 字串
+        function confirmDelete(firestoreId) {
+            openModal('刪除項目', '確定要永久刪除這個項目嗎？', async () => {
+                await DataService.deleteTask(String(firestoreId));
+                hideModal();
+            });
+        }
+
+        async function showCleanupModal() {
+            // 使用 localTasks 因為它已經與 Firebase 同步
+            const completedCount = localTasks.filter(t => t.completed).length;
+            if (completedCount === 0) {
+                showToast('目前沒有已完成的項目喔');
+                return;
+            }
+            openModal('清理已完成', `確定要一次清除 ${completedCount} 個已完成項目嗎？`, async () => {
+                await DataService.deleteCompletedTasks();
+                hideModal();
+                showToast(`已清理 ${completedCount} 個項目`);
+            });
+        }
+
+        function openModal(title, desc, confirmCallback) {
+            const backdrop = document.getElementById('modalBackdrop');
+            const content = document.getElementById('modalContent');
+            
+            document.getElementById('modalTitle').innerText = title;
+            document.getElementById('modalDesc').innerText = desc;
+            
+            const confirmBtn = document.getElementById('modalConfirmBtn');
+            const newBtn = confirmBtn.cloneNode(true);
+            confirmBtn.parentNode.replaceChild(newBtn, confirmBtn);
+            newBtn.onclick = confirmCallback;
+
+            backdrop.classList.remove('hidden');
+            void backdrop.offsetWidth; 
+            backdrop.classList.add('backdrop-active');
+            backdrop.classList.remove('backdrop-enter');
+            content.classList.add('modal-active');
+            content.classList.remove('modal-enter');
+        }
+
+        function hideModal() {
+            const backdrop = document.getElementById('modalBackdrop');
+            const content = document.getElementById('modalContent');
+            backdrop.classList.remove('backdrop-active');
+            backdrop.classList.add('backdrop-enter');
+            content.classList.remove('modal-active');
+            content.classList.add('modal-enter');
+            setTimeout(() => { backdrop.classList.add('hidden'); }, 200);
+        }
+
+        function showToast(msg) {
+            const toast = document.getElementById('toast');
+            toast.innerText = msg;
+            toast.classList.remove('opacity-0', 'translate-y-[-10px]');
+            setTimeout(() => { toast.classList.add('opacity-0', 'translate-y-[-10px]'); }, 2000);
+        }
+
+        function renderTasks() {
+            // 使用已同步的 localTasks
+            updateBadges(localTasks);
+
+            const tabTasks = localTasks.filter(t => t.category === currentTab);
+            
+            tabTasks.sort((a, b) => {
+                if (a.completed !== b.completed) return a.completed ? 1 : -1;
+                return b.timestamp - a.timestamp;
+            });
+
+            const taskListEl = document.getElementById('taskList');
+            const emptyStateEl = document.getElementById('emptyState');
+            const configWarningEl = document.getElementById('configWarning');
+
+            // 如果沒有 Config，不顯示列表
+            if (!firebaseConfig.apiKey) return;
+            configWarningEl.classList.add('hidden');
+
+            taskListEl.innerHTML = '';
+            taskListEl.appendChild(emptyStateEl);
+            taskListEl.appendChild(configWarningEl); // 保留結構
+
+            if (tabTasks.length === 0) {
+                emptyStateEl.classList.remove('hidden');
+            } else {
+                emptyStateEl.classList.add('hidden');
+                
+                tabTasks.forEach(task => {
+                    const el = document.createElement('div');
+                    const containerClass = task.completed 
+                        ? 'opacity-40 grayscale bg-gray-100 border-gray-200' 
+                        : 'bg-white border-orange-100/50';
+                    const textDecoration = task.completed ? 'line-through text-gray-500' : 'text-gray-800';
+                    const checkedState = task.completed ? 'checked' : '';
+
+                    // 注意：這裡將 ID 加上引號，因為 Firebase ID 是字串
+                    el.className = `flex items-center gap-3 p-3 rounded-xl shadow-sm border transition-all duration-300 ${containerClass}`;
+                    el.innerHTML = `
+                        <div class="flex-none pt-1">
+                            <input type="checkbox" class="custom-checkbox w-6 h-6 rounded-full border-2 border-orange-300 appearance-none cursor-pointer transition-colors relative bg-white" ${checkedState} onchange="toggleTask('${task.firestoreId}')">
+                        </div>
+                        <div class="flex-1 min-w-0 flex flex-col justify-center cursor-pointer" onclick="toggleTask('${task.firestoreId}')">
+                            <div class="text-base font-medium leading-snug break-words ${textDecoration}">
+                                ${escapeHtml(task.text)}
+                            </div>
+                            <div class="flex items-center gap-1 mt-1 opacity-70">
+                                <span class="text-sm">${task.avatar}</span>
+                                <span class="text-xs text-gray-400">${new Date(task.timestamp).toLocaleDateString()}</span>
+                            </div>
+                        </div>
+                        <button onclick="confirmDelete('${task.firestoreId}')" class="flex-none p-2 text-gray-300 hover:text-red-400 active:text-red-500 transition-colors">
+                            <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                        </button>
+                    `;
+                    taskListEl.appendChild(el);
+                });
+            }
+        }
+
+        function updateBadges(allTasks) {
+            ['shopping', 'bills', 'others'].forEach(cat => {
+                const count = allTasks.filter(t => t.category === cat && !t.completed).length;
+                const badgeEl = document.getElementById(`badge-${cat}`);
+                if (count > 0) {
+                    badgeEl.innerText = count > 99 ? '99+' : count;
+                    badgeEl.classList.remove('hidden');
+                } else {
+                    badgeEl.classList.add('hidden');
+                }
+            });
+        }
+
+        function getCategoryName(key) {
+            const map = { 'shopping': '採購', 'bills': '繳費', 'others': '雜項' };
+            return map[key] || '';
+        }
+
+        function autoResize(textarea) { textarea.style.height = 'auto'; textarea.style.height = textarea.scrollHeight + 'px'; }
+        function escapeHtml(text) { return text.replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' })[m]); }
+    </script>
+</body>
+</html>
